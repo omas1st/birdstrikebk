@@ -55,9 +55,7 @@ exports.getTrades = async (req, res) => {
     const winRate = totalTrades ? ((totalWins / totalTrades) * 100).toFixed(2) : 0;
     const lossRate = totalTrades ? ((totalLosses / totalTrades) * 100).toFixed(2) : 0;
 
-    // Count distinct setups (pair+strategy) from trades (or active setups)
-    const setupsCount = (await Trade.distinct('pair')).length; // simplified
-    // To be more accurate, count unique pair+strategy combos:
+    // Count distinct setups (pair+strategy combos)
     const combos = await Trade.aggregate([
       { $match: filter },
       { $group: { _id: { pair: '$pair', strategy: '$strategy' } } },
@@ -74,6 +72,19 @@ exports.getTrades = async (req, res) => {
       lossRate,
       setupsCount: distinctSetups,
     });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// DELETE a trade by ID
+exports.deleteTrade = async (req, res) => {
+  try {
+    const trade = await Trade.findByIdAndDelete(req.params.id);
+    if (!trade) {
+      return res.status(404).json({ error: 'Trade not found' });
+    }
+    res.json({ message: 'Trade deleted successfully' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
