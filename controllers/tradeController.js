@@ -1,4 +1,21 @@
 const Trade = require('../models/Trade');
+const Setup = require('../models/Setup');
+const Notification = require('../models/Notification');
+const { sendEmail } = require('../services/emailService');
+
+// Helper to create a notification (only if not already exists)
+const createNotificationIfNotExists = async (message, identifier) => {
+  try {
+    const exists = await Notification.findOne({ identifier });
+    if (!exists) {
+      const notif = new Notification({ message, identifier });
+      await notif.save();
+      await sendEmail('BIRDSTRIKEFX Journal Alert', message);
+    }
+  } catch (err) {
+    console.error('Notification creation error:', err);
+  }
+};
 
 // Record a trade
 exports.recordTrade = async (req, res) => {
@@ -10,6 +27,33 @@ exports.recordTrade = async (req, res) => {
 
     const trade = new Trade({ date, pair, strategy, outcome });
     await trade.save();
+
+    // ----- Real-time consecutive-loss detection -----
+    // Only check if the recorded trade is a loss
+    if (outcome === 'loss') {
+      // Fetch the last 3 trades for this pair+strategy, ordered by date desc
+      const recentTrades = await Trade.find({ pair, strategy })
+        .sort({ date: -1 })
+        .limit(3);
+
+      // If we have exactly 3 trades and all are losses → flag the setup
+      if (recentTrades.length === 3 && recentTrades.every(t => t.outcome === 'loss')) {
+        // Deactivate the active setup for this pair+strategy
+        const setup = await Setup.findOneAndUpdate(
+          { pair, strategy, isActive: true },
+          { isActive: false, flaggedAt: new Date() },
+          { new: true }
+        );
+
+        if (setup) {
+          // Create notification (avoid duplicates via identifier)
+          const message = `Setup ${pair} + ${strategy} has been flagged as failed (3 consecutive losses) and removed from active setups.`;
+          await createNotificationIfNotExists(message, `failed_${pair}_${strategy}`);
+        }
+      }
+    }
+    // -------------------------------------------------
+
     res.status(201).json({ message: 'Trade successfully recorded', trade });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -55,7 +99,6 @@ exports.getTrades = async (req, res) => {
     const winRate = totalTrades ? ((totalWins / totalTrades) * 100).toFixed(2) : 0;
     const lossRate = totalTrades ? ((totalLosses / totalTrades) * 100).toFixed(2) : 0;
 
-    // Count distinct setups (pair+strategy combos)
     const combos = await Trade.aggregate([
       { $match: filter },
       { $group: { _id: { pair: '$pair', strategy: '$strategy' } } },
