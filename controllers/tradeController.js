@@ -20,25 +20,25 @@ const createNotificationIfNotExists = async (message, identifier) => {
 // Record a trade
 exports.recordTrade = async (req, res) => {
   try {
-    const { date, pair, strategy, outcome } = req.body;
+    const { date, pair, strategy, outcome, reason, entered } = req.body;
     if (!date || !pair || !strategy || !outcome) {
       return res.status(400).json({ error: 'All fields are required' });
     }
 
-    const trade = new Trade({ date, pair, strategy, outcome });
+    const tradeData = { date, pair, strategy, outcome };
+    if (reason !== undefined) tradeData.reason = reason;
+    if (entered !== undefined) tradeData.entered = entered;
+
+    const trade = new Trade(tradeData);
     await trade.save();
 
     // ----- Real-time consecutive-loss detection -----
-    // Only check if the recorded trade is a loss
     if (outcome === 'loss') {
-      // Fetch the last 3 trades for this pair+strategy, ordered by date desc
       const recentTrades = await Trade.find({ pair, strategy })
         .sort({ date: -1 })
         .limit(3);
 
-      // If we have exactly 3 trades and all are losses → flag the setup
       if (recentTrades.length === 3 && recentTrades.every(t => t.outcome === 'loss')) {
-        // Deactivate the active setup for this pair+strategy
         const setup = await Setup.findOneAndUpdate(
           { pair, strategy, isActive: true },
           { isActive: false, flaggedAt: new Date() },
@@ -46,7 +46,6 @@ exports.recordTrade = async (req, res) => {
         );
 
         if (setup) {
-          // Create notification (avoid duplicates via identifier)
           const message = `Setup ${pair} + ${strategy} has been flagged as failed (3 consecutive losses) and removed from active setups.`;
           await createNotificationIfNotExists(message, `failed_${pair}_${strategy}`);
         }
