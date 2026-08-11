@@ -42,7 +42,7 @@ exports.recordTrade = async (req, res) => {
         const setup = await Setup.findOneAndUpdate(
           { pair, strategy, isActive: true },
           { isActive: false, flaggedAt: new Date() },
-          { new: true }
+          { returnDocument: 'after' }   // also fix deprecation here (optional)
         );
 
         if (setup) {
@@ -114,6 +114,30 @@ exports.getTrades = async (req, res) => {
       lossRate,
       setupsCount: distinctSetups,
     });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// UPDATE a trade by ID
+exports.updateTrade = async (req, res) => {
+  try {
+    const { date, pair, strategy, outcome, reason, entered } = req.body;
+    if (!date || !pair || !strategy || !outcome) {
+      return res.status(400).json({ error: 'All fields are required' });
+    }
+
+    const trade = await Trade.findByIdAndUpdate(
+      req.params.id,
+      { date, pair, strategy, outcome, reason, entered },
+      { returnDocument: 'after', runValidators: true }   // fixed: use returnDocument instead of deprecated 'new'
+    );
+
+    if (!trade) {
+      return res.status(404).json({ error: 'Trade not found' });
+    }
+
+    res.json({ message: 'Trade updated successfully', trade });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
