@@ -32,23 +32,67 @@ exports.recordTrade = async (req, res) => {
     const trade = new Trade(tradeData);
     await trade.save();
 
-    // ----- Real-time consecutive-loss detection -----
+    // ----- Two-tier consecutive-loss detection -----
     if (outcome === 'loss') {
+      // Fetch last 3 trades for this pair+strategy, newest first
       const recentTrades = await Trade.find({ pair, strategy })
-        .sort({ date: -1 })
+        .sort({ date: -1, createdAt: -1 })
         .limit(3);
 
-      if (recentTrades.length === 3 && recentTrades.every(t => t.outcome === 'loss')) {
+      // Count consecutive losses from the top
+      let consecutiveLosses = 0;
+      for (const t of recentTrades) {
+        if (t.outcome === 'loss') consecutiveLosses++;
+        else break;
+      }
+
+      // Tier 2: 3 consecutive losses → hard failure (remove setup)
+      if (consecutiveLosses >= 3) {
         const setup = await Setup.findOneAndUpdate(
           { pair, strategy, isActive: true },
-          { isActive: false, flaggedAt: new Date() },
-          { returnDocument: 'after' }   // also fix deprecation here (optional)
+          { isActive: false, onProbation: false, probationAt: null, flaggedAt: new Date() },
+          { returnDocument: 'after' }
         );
 
         if (setup) {
           const message = `Setup ${pair} + ${strategy} has been flagged as failed (3 consecutive losses) and removed from active setups.`;
           await createNotificationIfNotExists(message, `failed_${pair}_${strategy}`);
         }
+      }
+      // Tier 1: exactly 2 consecutive losses → probation + warning
+      else if (consecutiveLosses === 2) {
+        // Anchor the identifier to the date of the older loss so we only notify
+        // once per streak (and don't repeat on the 3rd loss).
+        const anchorDate = new Date(recentTrades[1].date)
+          .toISOString()
+          .slice(0, 10);
+        const identifier = `probation_${pair}_${strategy}_${anchorDate}`;
+
+        const setup = await Setup.findOneAndUpdate(
+          { pair, strategy, isActive: true },
+          { onProbation: true, probationAt: new Date() },
+          { returnDocument: 'after' }
+        );
+
+        if (setup) {
+          const message = `⚠️ Warning: Setup ${pair} + ${strategy} is now ON PROBATION (2 consecutive losses). Reduce position size on the next trade and watch closely — a 3rd loss will remove the setup.`;
+          await createNotificationIfNotExists(message, identifier);
+        }
+      }
+    } else if (outcome === 'win') {
+      // A win clears probation for this setup (if it was on probation)
+      const clearedSetup = await Setup.findOneAndUpdate(
+        { pair, strategy, isActive: true, onProbation: true },
+        { onProbation: false, probationAt: null },
+        { returnDocument: 'after' }
+      );
+
+      if (clearedSetup) {
+        // Anchor identifier to the win's date so each recovery only fires once
+        const winAnchorDate = new Date(date).toISOString().slice(0, 10);
+        const identifier = `probation_cleared_${pair}_${strategy}_${winAnchorDate}`;
+        const message = `✅ Good news: Setup ${pair} + ${strategy} has RECOVERED from probation. The 2-loss streak was broken with a win — you can trade it at normal size again.`;
+        await createNotificationIfNotExists(message, identifier);
       }
     }
     // -------------------------------------------------
@@ -130,7 +174,7 @@ exports.updateTrade = async (req, res) => {
     const trade = await Trade.findByIdAndUpdate(
       req.params.id,
       { date, pair, strategy, outcome, reason, entered },
-      { returnDocument: 'after', runValidators: true }   // fixed: use returnDocument instead of deprecated 'new'
+      { returnDocument: 'after', runValidators: true }
     );
 
     if (!trade) {

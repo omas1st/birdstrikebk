@@ -14,6 +14,11 @@ const setupSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    onProbation: {
+      type: Boolean,
+      default: false,
+    },
+    probationAt: Date,
     flaggedAt: Date,
     restoredAt: Date,
   },
@@ -21,6 +26,9 @@ const setupSchema = new mongoose.Schema(
 );
 
 // Compound index to prevent duplicate active setups with same pair+strategy
-setupSchema.index({ pair: 1, strategy: 1, isActive: 1 }, { unique: true, partialFilterExpression: { isActive: true } });
+setupSchema.index(
+  { pair: 1, strategy: 1, isActive: 1 },
+  { unique: true, partialFilterExpression: { isActive: true } }
+);
 
 module.exports = mongoose.model('Setup', setupSchema);

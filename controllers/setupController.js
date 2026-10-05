@@ -22,9 +22,11 @@ exports.addSetup = async (req, res) => {
     let setup = await Setup.findOne({ pair, strategy, isActive: false });
 
     if (setup) {
-      // Reactivate it
+      // Reactivate it and clear probation flags
       setup.isActive = true;
       setup.restoredAt = new Date();
+      setup.onProbation = false;
+      setup.probationAt = null;
       await setup.save();
       return res.status(200).json(setup);
     }
@@ -49,8 +51,8 @@ exports.deleteSetup = async (req, res) => {
   try {
     const setup = await Setup.findByIdAndUpdate(
       req.params.id,
-      { isActive: false },
-      { new: true }
+      { isActive: false, onProbation: false, probationAt: null },
+      { returnDocument: 'after' }
     );
     if (!setup) return res.status(404).json({ error: 'Setup not found' });
     res.json({ message: 'Setup deleted (deactivated)' });
