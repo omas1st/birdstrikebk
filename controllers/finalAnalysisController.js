@@ -77,13 +77,12 @@ exports.getFinalAnalysis = async (req, res) => {
         };
       })
       .sort((a, b) => {
-        // Sort by most recent failure first
         const da = a.flaggedAt ? new Date(a.flaggedAt).getTime() : 0;
         const db = b.flaggedAt ? new Date(b.flaggedAt).getTime() : 0;
         return db - da;
       });
 
-    // 3-month revival notifications (once per month per setup)
+    // 3-month revival notifications
     const currentMonthKey = `${now.getFullYear()}-${now.getMonth() + 1}`;
     for (const s of flaggedSetups) {
       if (s.readyForRetry) {
@@ -104,7 +103,6 @@ exports.getFinalAnalysis = async (req, res) => {
         probationAt: s.probationAt || null,
       }))
       .sort((a, b) => {
-        // Sort by most recent probation first
         const da = a.probationAt ? new Date(a.probationAt).getTime() : 0;
         const db = b.probationAt ? new Date(b.probationAt).getTime() : 0;
         return db - da;
@@ -122,7 +120,7 @@ exports.getFinalAnalysis = async (req, res) => {
       }))
       .sort((a, b) => a.pair.localeCompare(b.pair) || a.strategy.localeCompare(b.strategy));
 
-    // ---------- iv. Hot winning setups (3 consecutive wins, any time) ----------
+    // ---------- iv. Hot winning setups (3 consecutive wins) ----------
     const hotWinningSetups = [];
     for (const [key, list] of Object.entries(tradesBySetup)) {
       let maxStreak = 0;
@@ -162,13 +160,47 @@ exports.getFinalAnalysis = async (req, res) => {
         };
       })
       .sort((a, b) => {
-        // Sort by win rate descending, then pair name
         const wr = parseFloat(b.winRate) - parseFloat(a.winRate);
         if (wr !== 0) return wr;
         return a.pair.localeCompare(b.pair) || a.strategy.localeCompare(b.strategy);
       });
 
-    // ---------- vi. Advice ----------
+    // ---------- NEW: vi. Stale setups (No trades in 100 days) ----------
+    const staleSetups = [];
+    for (const setup of currentSetupsRaw) {
+      const key = `${setup.pair}||${setup.strategy}`;
+      const list = tradesBySetup[key] || [];
+      
+      let daysSinceLastTrade = 0;
+      let lastTradeDate = null;
+
+      if (list.length > 0) {
+        const lastTrade = list[list.length - 1]; // Since sorted by date ascending
+        lastTradeDate = lastTrade.date;
+        daysSinceLastTrade = Math.floor(
+          (now - new Date(lastTrade.date)) / (1000 * 60 * 60 * 24)
+        );
+      } else {
+        // No trades ever recorded for this setup, check time since creation
+        daysSinceLastTrade = Math.floor(
+          (now - new Date(setup.createdAt)) / (1000 * 60 * 60 * 24)
+        );
+      }
+
+      if (daysSinceLastTrade >= 100) {
+        staleSetups.push({
+          _id: setup._id,
+          pair: setup.pair,
+          strategy: setup.strategy,
+          daysSinceLastTrade,
+          lastTradeDate,
+        });
+      }
+    }
+    // Sort by longest time without a trade first
+    staleSetups.sort((a, b) => b.daysSinceLastTrade - a.daysSinceLastTrade);
+
+    // ---------- vii. Advice ----------
     const advice = [];
     if (currentSetups.length < 3) {
       const msg = `Less than 3 active setups. Please add more setups to diversify.`;
@@ -183,7 +215,7 @@ exports.getFinalAnalysis = async (req, res) => {
       await createNotificationIfNotExists(msg2, 'advice_few_strategies');
     }
 
-    // ---------- vii. Setup failure and restore durations ----------
+    // ---------- viii. Setup failure and restore durations ----------
     const setupDurations = flaggedSetupsRaw
       .map((s) => ({
         pair: s.pair,
@@ -203,7 +235,7 @@ exports.getFinalAnalysis = async (req, res) => {
       }))
       .sort((a, b) => a.pair.localeCompare(b.pair) || a.strategy.localeCompare(b.strategy));
 
-    // ---------- viii. Recent pattern for probation + failed setups ----------
+    // ---------- ix. Recent pattern for probation + failed setups ----------
     const recentPatternSetups = [];
 
     probationSetups.forEach((s) => {
@@ -234,7 +266,6 @@ exports.getFinalAnalysis = async (req, res) => {
       });
     });
 
-    // Sort: probation first, then failed; within each, by pair name
     const statusRank = { Probation: 0, Failed: 1 };
     recentPatternSetups.sort((a, b) => {
       const sr = statusRank[a.status] - statusRank[b.status];
@@ -248,6 +279,7 @@ exports.getFinalAnalysis = async (req, res) => {
       restoredSetups,
       hotWinningSetups,
       currentSetups,
+      staleSetups, // Return new stale setups
       advice,
       strategyAdvice: activeStrategies.length < 2 ? advice[1] : '',
       setupDurations,
